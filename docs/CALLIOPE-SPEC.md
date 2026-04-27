@@ -1,6 +1,6 @@
 # Calliope Specification
 
-**Status:** v0.1 — Phase 7 Stage 3 (pages)
+**Status:** v0.1 — Phase 7 Stage 4 (render drivers)
 **Reference:** AEDIFEX/ASSG (2025-12-09) — used as a guide, not adopted wholesale.
 
 ---
@@ -487,21 +487,155 @@ tooling:
 stable so pages lifted with this sequence validate without custom
 metadata.
 
-## 11. Stage map
+## 11. Render drivers
+
+`calliope.render` ships substrate-shaped render-execution primitives.
+Concrete per-dimension generators (the cleanroom `L1_*_generator.py`
+family) are domain-specific and live in adapters, not in calliope.
+
+### 11.1 Renderable Protocol
+
+```python
+@runtime_checkable
+class Renderable(Protocol):
+    @property
+    def metadata(self) -> TemplateMetadata: ...
+    def render(
+        self,
+        data: Mapping[str, Any],
+        context: Mapping[str, Any] | None = None,
+    ) -> str: ...
+```
+
+`PageTemplate`, `JinjaPageTemplate`, `CardTemplate`, `JinjaCardTemplate`,
+and any structurally-matching adapter class satisfy this Protocol.
+`RenderJob` holds a `Renderable`; drivers consume jobs, not specific
+template subclasses.
+
+### 11.2 RenderJob
+
+```python
+@dataclass(frozen=True)
+class RenderJob:
+    name: str                                  # for logging / reporting
+    renderable: Renderable
+    data: Mapping[str, Any] = {}               # defensively copied
+    context: Mapping[str, Any] | None = None   # defensively copied if set
+    output_path: Path | None = None            # if set, driver writes HTML here
+```
+
+`data` and `context` are wrapped in `MappingProxyType` at construction
+to prevent caller-side mutation from leaking into rendering. `name` is
+required and non-empty; jobs are unhashable because they hold mappings.
+If `output_path` is `None`, the driver returns the rendered HTML in the
+outcome and writes nothing.
+
+### 11.3 JobOutcome and RenderReport
+
+```python
+@dataclass(frozen=True)
+class JobOutcome:
+    name: str
+    success: bool
+    duration_ms: float
+    output_path: Path | None = None
+    html_output: str | None = None
+    error: str | None = None
+    error_type: str | None = None
+
+@dataclass(frozen=True)
+class RenderReport:
+    outcomes: tuple[JobOutcome, ...]
+    @property
+    def total_jobs(self) -> int: ...
+    @property
+    def success_count(self) -> int: ...
+    @property
+    def failure_count(self) -> int: ...
+    @property
+    def total_duration_ms(self) -> float: ...
+    @property
+    def is_clean(self) -> bool: ...
+    def failures(self) -> tuple[JobOutcome, ...]: ...
+```
+
+`JobOutcome` invariants: `success=True` excludes a non-empty `error`,
+`duration_ms >= 0`. When the job had no `output_path`, the rendered
+HTML is in `html_output`; when it did, `html_output` is `None` and
+`output_path` is the file path. For per-job execution, drivers capture
+every `Exception` raised by `render()` or the file-output path as
+`success=False` with `error` and `error_type` populated. `BaseException`
+subclasses (notably `KeyboardInterrupt` and `SystemExit`) propagate
+intentionally so ctrl-C and explicit process exits keep their normal
+semantics.
+
+### 11.4 RenderDriver Protocol
+
+```python
+@runtime_checkable
+class RenderDriver(Protocol):
+    def run(self, jobs: Iterable[RenderJob]) -> RenderReport: ...
+```
+
+Calliope ships two concrete drivers:
+
+- `SerialRenderDriver` — runs jobs in submission order, one at a time.
+  Use in tests, single-page renders, or when deterministic ordering
+  matters.
+- `ThreadedRenderDriver(max_workers=…)` — runs jobs in a
+  `ThreadPoolExecutor`. Threads sidestep pickling so adapters can pass
+  renderables that close over Jinja2 environments and other unpicklable
+  state. CPython's GIL means threads do not give CPU parallelism for
+  HTML rendering itself, but they help when the renderable is
+  I/O-bound (database queries inside `bind_context`, asset hashing,
+  network calls).
+
+A process-pool render driver is **not** shipped because Jinja2
+`Environment` objects, adapter callbacks, and many adapter-defined
+renderable classes are not picklable, and the resulting deserialization
+errors are confusing failure modes for a substrate. Adapters that need
+real CPU parallelism should write their own process-pool driver
+backed by either pickling-clean renderables or a fork-based pool.
+
+Drivers validate the full batch before rendering begins. If two jobs in
+the same `run()` call share the same non-`None` `output_path`, `run()`
+raises `ValueError` naming the duplicated path and rejects the entire
+batch before any renderable is called.
+
+### 11.5 File output convention
+
+When `RenderJob.output_path` is set, the driver:
+
+1. Calls `path.parent.mkdir(parents=True, exist_ok=True)`.
+2. Writes the rendered HTML to a temp file in the same parent directory
+   using UTF-8 and a sibling filename derived from the final path (for
+   example `page.html.tmp.<uuid>`).
+3. Publishes atomically with `os.replace(tmp_path, path)`, so an
+   existing file is replaced in one step rather than truncated in place.
+4. Reports the path in `JobOutcome.output_path`; leaves `html_output`
+   `None` to keep the report compact for large sites.
+
+Any `Exception` raised during the write or replace step is captured and
+reported as a failed outcome with `error_type` set (for example
+`UnicodeEncodeError`, `LookupError`, `FileExistsError`,
+`NotADirectoryError`, `PermissionError`, or a replace failure). The
+driver attempts to remove the temp file before returning that failed
+outcome. `BaseException` subclasses propagate intentionally.
+
+## 12. Stage map
 
 | Stage | Subpackage | Lift sources |
 |---|---|---|
 | 1 | `templates` | spec; `aedifex_template.py` (sanitized helpers); production marker fixtures from `L1_metagenerator.py` |
 | 2 | `cards` | substrate primitives designed from spec; `card_components.py` family is reference material, not lift source |
-| 3 *(this stage)* | `pages` | substrate primitives (pagination, hero, scoreboard, narrative); `L1_landing_generator.py` / `L1_metagenerator.py` / `L1_narrative.py` are reference material — concrete domain page generators stay in adapters |
-| 4 | `render` (per-dimension) | 13× `L1_*_generator.py` |
-| 5 | `render` (drivers) | `L1_render_parallel.py`, `L1_render_static_pro.py` |
-| 6 | `deploy` | `deploy_tiiny.py` |
-| 7 | tag `calliope v0.1.0` | — |
+| 3 | `pages` | substrate primitives (pagination, hero, scoreboard, narrative); `L1_landing_generator.py` / `L1_metagenerator.py` / `L1_narrative.py` are reference material — concrete domain page generators stay in adapters |
+| 4 *(this stage)* | `render` | substrate primitives (`Renderable`, `RenderJob`, `RenderDriver`, `SerialRenderDriver`, `ThreadedRenderDriver`); `L1_render_parallel.py` / `L1_render_static_pro.py` are reference material — concrete per-dimension renderers stay in adapters |
+| 5 | `deploy` | `deploy_tiiny.py` |
+| 6 | tag `calliope v0.1.0` | — |
 
 See `docs/LIFT_PATTERN.md` for the per-file lift methodology.
 
-## 12. Versioning
+## 13. Versioning
 
 - **Major:** structural change to marker grammar, `TemplateMetadata` shape, or
   subpackage boundaries.
@@ -512,7 +646,7 @@ See `docs/LIFT_PATTERN.md` for the per-file lift methodology.
 Calliope follows PEP 440. The first stable tag is `v0.1.0`, gated on at least
 one working primitive in each of cards, pages, render, deploy.
 
-## 13. Security posture
+## 14. Security posture
 
 Calliope is a rendering substrate, not an XSS prevention layer. Its
 guarantees about caller-supplied input are scoped:
@@ -547,7 +681,7 @@ declaration value); rejecting obviously-broken inputs at construction
 catches typos and trivial misuse without claiming to be a complete
 escape barrier.
 
-## 14. What calliope is not
+## 15. What calliope is not
 
 - A general-purpose template engine. Use Jinja2 directly for that.
 - A site framework. Calliope renders pages; site structure is the adapter's
@@ -555,5 +689,5 @@ escape barrier.
 - A CMS. Calliope is a deterministic build pipeline, not an authoring tool.
 - A complete reimplementation of AEDIFEX/ASSG. Calliope adopts the marker
   contract and validation idea; it does not adopt the reference implementation.
-- An XSS sanitizer or HTML attribute escape layer. See §13 for the
+- An XSS sanitizer or HTML attribute escape layer. See §14 for the
   security boundary.

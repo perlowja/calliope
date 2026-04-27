@@ -33,6 +33,20 @@ filter / sort. Apps register dimensions by name in their manifest;
 the parallel driver runs every registered dimension in parallel.
 """
 
+from calliope.render.job import RenderJob
+from calliope.render.protocol import Renderable, RenderDriver
+from calliope.render.report import JobOutcome, RenderReport
 from calliope.render.results import RenderResult
+from calliope.render.serial import SerialRenderDriver
+from calliope.render.threaded import ThreadedRenderDriver
 
-__all__ = ["RenderResult"]
+__all__ = [
+    "JobOutcome",
+    "RenderDriver",
+    "RenderJob",
+    "RenderReport",
+    "RenderResult",
+    "Renderable",
+    "SerialRenderDriver",
+    "ThreadedRenderDriver",
+]
