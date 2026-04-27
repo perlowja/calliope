@@ -12,37 +12,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""calliope — static-site rendering substrate for data-journalism pipelines.
+"""calliope — static-site rendering substrate for adapter-driven pipelines.
 
 Named for the Greek Muse of epic poetry, mother of Orpheus. Calliope
-lifts the cleanroom's `L*_*_generator.py` family + `card_components.py`
-+ `aedifex_template.py` + `ai_badge.py` + `assets.py` +
-`frontend-templates/` + `frontend-assets/` into a standalone substrate.
+lifts the cleanroom page-generation stack into a standalone substrate.
 
 Fleet position:
 
-    clio        AI extraction primitives  (Muse: history)
-    etlantis    ETL substrate              (Atlantis)
-    calliope    static-site rendering      (Muse: epic poetry)  ← here
-    mnemos      memory                     (Mnemosyne)
+    clio        AI extraction primitives
+    etlantis    ETL substrate
+    calliope    static-site rendering  ← here
+    mnemos      memory
     ↓
-    RiskyEats / rvmaps / weederboard       thin adapters
+    adapter packages integrate domain data with the substrate
 
-Each adapter feeds a Polars DataFrame (typically the published parquet
-output of an etlantis pipeline) into calliope and gets a static site
-out the other end. No domain coupling: calliope doesn't know what
-DBPR is, doesn't know what a "restaurant" is, doesn't know what
-"chronic violations" mean. It knows how to render a row as a card,
-compose cards into pages, bundle assets, and deploy.
+Each adapter feeds tabular or mapping-shaped data into calliope and gets
+a static site out the other end. Calliope remains substrate-neutral: it
+knows how to render rows as cards, compose cards into pages, bundle
+assets, and deploy, but domain semantics stay in the adapter layer.
 
 Subpackages (Phase 7 lift roadmap):
 
     cards       Per-row card renderers. Lifted from cleanroom
-                ``card_components.py`` + ``badactors_card_components.py``
-                + ``codered_card_components{,_v2}.py`` +
-                ``defunct_card_components.py``. Card variants share a
-                common Protocol so apps can swap renderers per
-                dimension without changing the page-level code.
+                ``card_components.py`` plus its variant family. Card
+                variants share a common Protocol so apps can swap
+                renderers per dimension without changing the page-level
+                code.
 
     pages       Page-level generators. Lifted from cleanroom
                 ``L1_landing_generator.py`` (single-page) and
@@ -64,10 +59,8 @@ Subpackages (Phase 7 lift roadmap):
     render      Render drivers. Lifted from cleanroom
                 ``L1_render_parallel.py`` (parallel batched render)
                 and ``L1_render_static_pro.py`` (production-shape
-                static renderer). Plus the per-dimension page
-                generators (L1_badactors_generator, L1_chronic_generator,
-                L1_cleanplates_generator, …) which become per-card-
-                variant runners.
+                static renderer). The ``L1_*_generator.py`` family
+                becomes per-card-variant runners.
 
     deploy      Deploy adapters. Lifted from cleanroom
                 ``deploy_tiiny.py`` (Tiiny.host upload). Future
@@ -75,11 +68,12 @@ Subpackages (Phase 7 lift roadmap):
                 add new modules under this package without touching
                 anything else.
 
-Status: Phase 7 Stage 0 (this commit) — repo scaffold, pyproject,
-package shape. Subsequent stages lift cleanroom files into the
-subpackages above. v0.0.1rc1 is the bootstrap tag (PEP 440 form);
-first real release (v0.1.0) ships when at least cards + pages +
-render + deploy each have one working primitive.
+Status: Phase 7 Stage 1 (templates foundation) — repo scaffold,
+pyproject, package shape, and template primitives are in place.
+Subsequent stages lift cleanroom files into the subpackages above.
+v0.0.1rc1 is the bootstrap tag (PEP 440 form); first real release
+(`v0.1.0`) ships when at least cards + pages + render + deploy each
+have one working primitive.
 """
 
-__version__ = "0.0.1rc1"
+__version__ = "0.0.2"

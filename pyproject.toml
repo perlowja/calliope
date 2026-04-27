@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "calliope"
-version = "0.0.1rc1"
+version = "0.0.2"
 description = "Static-site rendering substrate for data-journalism pipelines. Cards, multi-page generators, asset bundling, deploy adapters."
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
@@ -39,6 +39,8 @@ dependencies = [
     # supplied DataFrames and renders them; pandas is intentionally NOT
     # a dep — apps that have pandas frames convert via .to_polars().
     "polars>=0.20.0",
+    # PEP 440 / SemVer comparison for the template registry. PyPA-canonical.
+    "packaging>=23.0",
 ]
 
 [project.optional-dependencies]

@@ -1,12 +1,20 @@
 # Copyright 2026 calliope Contributors
 #
-# Licensed under the Apache License, Version 2.0 (the "License").
-# See LICENSE in the repository root for full terms.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-"""calliope.render — render drivers + per-dimension page runners.
+"""calliope.render — render drivers and dimension-oriented page runners.
 
-Status: stub. Phase 7 Stage 4 lifts the cleanroom's render drivers
-+ per-dimension generators into this package.
+Stage 1 lands `RenderResult` here so render drivers can produce results
+without `templates/` importing render-stage concerns. Subsequent stages
+add the parallel and production drivers + per-dimension runners.
 
 Source files staged for lift (~15 files):
 
@@ -15,20 +23,8 @@ Source files staged for lift (~15 files):
         L1_render_static_pro.py     (172 LOC) — production static
                                                 renderer
 
-    Per-dimension generators:
-        L1_badactors_generator.py
-        L1_chronic_generator.py
-        L1_cleanplates_generator.py
-        L1_code_red_generator.py
-        L1_condition_green_generator.py
-        L1_defunct_generator.py
-        L1_ghost_generator.py
-        L1_hotspots_generator.py
-        L1_mobilebusiness_generator.py
-        L1_nearmiss_generator.py
-        L1_newopenings_generator.py
-        L1_permanent_generator.py
-        L1_redalert_generator.py
+    Dimension generators:
+        L1_*_generator.py family (dimension-specific page runners)
 
 Planned shape: each per-dimension generator becomes a
 `DimensionRenderer` instance — configured with a card variant
@@ -36,3 +32,7 @@ Planned shape: each per-dimension generator becomes a
 filter / sort. Apps register dimensions by name in their manifest;
 the parallel driver runs every registered dimension in parallel.
 """
+
+from calliope.render.results import RenderResult
+
+__all__ = ["RenderResult"]
