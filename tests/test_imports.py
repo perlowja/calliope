@@ -14,7 +14,7 @@ from __future__ import annotations
 def test_top_level_package_imports():
     import calliope
 
-    assert calliope.__version__ == "0.0.5"
+    assert calliope.__version__ == "0.1.0"
 
 
 def test_subpackages_import():
@@ -63,4 +63,4 @@ def test_public_docstrings_are_domain_neutral_and_stage_current():
     for forbidden in ("RiskyEats", "DBPR", "restaurant", "chronic", "redalert"):
         assert forbidden not in combined
     assert "Stage 0" not in (calliope.__doc__ or "")
-    assert "Phase 7 Stage 1" in (calliope.__doc__ or "")
+    assert "v0.1.0" in (calliope.__doc__ or "")

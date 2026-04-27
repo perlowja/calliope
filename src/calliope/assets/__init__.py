@@ -1,21 +1,54 @@
 # Copyright 2026 calliope Contributors
 #
-# Licensed under the Apache License, Version 2.0 (the "License").
-# See LICENSE in the repository root for full terms.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-"""calliope.assets — static asset bundling (CSS, JS, images).
+"""calliope.assets — static asset bundling with content-hashed names.
 
-Status: stub. Phase 7 Stage 2 lifts the cleanroom's asset
-infrastructure into this package.
+Stage 5 ships:
 
-Source files staged for lift:
+- ``Asset`` + ``hash_content`` — asset model and SHA-256-based hashing.
+- ``AssetManifest`` + ``manifest_from_assets`` — frozen lookup of
+  logical → published paths.
+- ``collect_assets`` and ``bundle_assets`` — read source dir, write
+  hashed copies, return manifest.
+- ``rewrite_html_with_manifest`` — substitute logical URLs in rendered
+  HTML with published (cache-busted) URLs.
 
-    assets.py             (222 LOC) — asset bundler
-    frontend-assets/                 — static asset sources (CSS, JS,
-                                       fonts, images)
+Calliope intentionally does not minify, compile, or transform asset
+content; it only hashes and rewrites. Adapters that need bundling
+preprocess their source dir before calling ``bundle_assets``.
 
-Planned shape: an `AssetBundle` class takes a manifest of source
-files, produces hashed output names + a manifest-rewrite map for
-cache-bust deploys. Optional `inline=True` mode for email-shape
-output uses premailer (etlantis[inline] extras) to inline CSS.
+See ``docs/CALLIOPE-SPEC.md`` §12 for the contract.
 """
+
+from calliope.assets.asset import Asset
+from calliope.assets.bundler import bundle_assets, collect_assets
+from calliope.assets.hashing import (
+    DEFAULT_HASH_LENGTH,
+    MAX_HASH_LENGTH,
+    MIN_HASH_LENGTH,
+    hash_content,
+)
+from calliope.assets.manifest import AssetManifest, manifest_from_assets
+from calliope.assets.rewriter import rewrite_html_with_manifest
+
+__all__ = [
+    "Asset",
+    "AssetManifest",
+    "DEFAULT_HASH_LENGTH",
+    "MAX_HASH_LENGTH",
+    "MIN_HASH_LENGTH",
+    "bundle_assets",
+    "collect_assets",
+    "hash_content",
+    "manifest_from_assets",
+    "rewrite_html_with_manifest",
+]

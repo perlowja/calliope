@@ -68,12 +68,11 @@ Subpackages (Phase 7 lift roadmap):
                 add new modules under this package without touching
                 anything else.
 
-Status: Phase 7 Stage 1 (templates foundation) — repo scaffold,
-pyproject, package shape, and template primitives are in place.
-Subsequent stages lift cleanroom files into the subpackages above.
-v0.0.1rc1 is the bootstrap tag (PEP 440 form); first real release
-(`v0.1.0`) ships when at least cards + pages + render + deploy each
-have one working primitive.
+Status: ``v0.1.0`` — first stable release. All subpackages
+(``templates``, ``cards``, ``pages``, ``render``, ``assets``,
+``deploy``) ship working substrate primitives. Concrete domain
+generators, deploy adapters, and per-dimension renderers stay in
+adapter packages.
 """
 
-__version__ = "0.0.5"
+__version__ = "0.1.0"

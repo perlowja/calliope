@@ -1,160 +1,152 @@
-# Calliope Specification
+# CALLIOPE Specification
 
-**Status:** v0.1 — Phase 7 Stage 4 (render drivers)
-**Reference:** AEDIFEX/ASSG (2025-12-09) — used as a guide, not adopted wholesale.
+Status: `v0.1.0` — Phase 7 Stage 5 (`assets` + `deploy`) — first stable release.
 
----
+Calliope is the static-site rendering substrate in the cleanroom lift
+family:
+
+```text
+clio        extraction
+etlantis    ETL
+calliope    rendering + assets + deploy
+mnemos      memory
+```
+
+Adapters feed structured data into calliope and receive HTML, static
+assets, and deployable output. Domain semantics stay in adapters.
 
 ## 1. Purpose
 
-Calliope is a static-site rendering substrate for data-journalism pipelines.
-It accepts caller-supplied row data (typically Polars DataFrames published by
-an ETL pipeline) and emits HTML pages, asset bundles, and deploy artifacts.
+Calliope exists to provide:
 
-It is intentionally domain-agnostic: it does not know what a restaurant is,
-what a "violation" means, or what jurisdiction the data describes. Domain
-shape lives in adapters (e.g. RiskyEats, rvmaps, weederboard).
+- template contracts for HTML shells,
+- row-level card rendering primitives,
+- page-composition primitives,
+- render drivers,
+- asset bundling with content-hashed filenames,
+- deploy contracts and a working local reference target.
 
-## 2. Subpackage layout
+The package is substrate-neutral. It does not ship restaurant, Florida,
+DBPR, or other adapter-specific literals.
 
-Each subpackage has a single, narrow responsibility. The split is the
-substrate's primary architectural commitment and is not collapsed into a
-single namespace.
+## 2. Design Goals
 
-| Subpackage | Responsibility |
-|---|---|
-| `calliope.templates` | Page-shell contracts: metadata, marker validation, block extraction, registry, sanitized shell helpers |
-| `calliope.cards` | Per-row card renderers via a swappable Protocol |
-| `calliope.pages` | Page-level generators that compose cards + nav + assets |
-| `calliope.assets` | Static asset bundling, hashing, and manifest rewrites |
-| `calliope.render` | Render drivers (parallel batched, production static) and `RenderResult` |
-| `calliope.deploy` | Deploy adapters (Tiiny.host, GitHub Pages, S3+CloudFront, …) |
+1. Keep domain logic out of the substrate.
+2. Prefer frozen data structures and defensive copies.
+3. Expose small, composable interfaces instead of monolithic generators.
+4. Keep output deterministic for identical inputs.
+5. Capture operational errors as result objects where appropriate.
+6. Leave production policy choices to adapters.
 
-A page template is **not** a card template. A card renderer is **not** a page
-generator. They have different lifecycles, different inputs, and different
-outputs, and they live in different subpackages.
+## 3. Marker Grammar
 
-## 3. Marker grammar
+Calliope uses HTML comment markers to delimit structural blocks in
+rendered output.
 
-Calliope adopts the AEDIFEX block-marker convention but defines its own
-grammar — strict enough to validate, permissive enough to match production
-output already shipped by upstream adapters.
+### 3.1 Block Names
 
-### 3.1 Opening marker
+Block names are kebab-case and match:
 
-```
-<!-- BLOCK:<name>[ <annotation>] -->
+```text
+[a-z][a-z0-9-]*
 ```
 
-- `name`: kebab-case, `[a-z][a-z0-9-]*` (matches `header`, `nav`, `how-to-use`,
-  `red-alert`).
-- `annotation` *(optional)*: free-form text after a single space, terminated
-  by `-->`. Conventionally a parenthesized note like
-  `(placeholder - prevents layout shift)` or `(RSS feed - dimension-themed)`.
-  Annotations are documentation; calliope ignores them when matching.
+Opening markers:
 
-### 3.2 Closing marker
-
-```
-<!-- /BLOCK:<name> -->
+```html
+<!-- BLOCK:hero -->
+<!-- BLOCK:signup optional annotation -->
 ```
 
-- `name`: same kebab-case grammar as opening.
-- No annotation. A closing marker with annotation is a parse error.
+Closing markers:
 
-### 3.3 Validation
+```html
+<!-- /BLOCK:hero -->
+```
 
-A page is **structurally compliant** with a template iff:
+Annotations are allowed only on opening markers.
 
-1. Every name in `metadata.blocks` appears as an opening marker exactly once.
-2. Every opening marker is followed later in document order by a matching
-   closing marker; a close-before-open marker does not satisfy the block.
-3. The order of opening markers in the rendered HTML matches the order of
-   `metadata.blocks`.
-4. No marker appears that is not declared in `metadata.blocks` (extra-block).
+### 3.2 Validation Semantics
 
-Compliance levels:
+`detect_blocks(html)` returns the names of paired blocks in document
+order. `validate_output(html, expected_blocks, data_warnings=())`
+returns a `ValidationResult` containing:
 
-| Level | Meaning |
-|---|---|
-| `FULL` | All four conditions hold. |
-| `PARTIAL` | Markers found, but at least one of (missing, extra, out-of-order, duplicate, unclosed). |
-| `NONE` | No recognizable markers in the output. |
+- `level`: `full`, `partial`, or `none`
+- `found_blocks`
+- `missing_blocks`
+- `extra_blocks`
+- `out_of_order`
+- `duplicate_blocks`
+- `unclosed_blocks`
+- `data_warnings`
 
-`PARTIAL` is usable but should be reported. `NONE` is a render failure.
+Sequence matters. Validation checks order, not just membership.
 
-#### Duplicate suppression contract
+## 4. Templates Overview
 
-A block name that appears more than once as an opening marker is treated
-as a single classification — `duplicate_blocks` — and is **suppressed
-from pairing**, with the following observable behavior:
+`calliope.templates` defines page-shell contracts and reusable helpers.
+Templates operate on one mapping at a time. Pagination, batching, and
+parallelism belong to later stages.
 
-| Surface | Behavior for a duplicate name |
-|---|---|
-| `ValidationResult.duplicate_blocks` | Reports the name. |
-| `ValidationResult.found_blocks` | Does not include the name. |
-| `ValidationResult.unclosed_blocks` | Does not include the name even if some opens are unclosed. Duplicate trumps unclosed. |
-| `ValidationResult.missing_blocks` | Includes the name if it appears in `expected_blocks`, because the name is absent from `found_blocks`. Missing and duplicate are independent classifications and may both apply. |
-| `ValidationResult.extra_blocks` | Does not include the name. A duplicate name that is *not* in `expected_blocks` is reported only via `duplicate_blocks`, not via `extra_blocks`, because `extra_blocks` is computed from `found_blocks` after duplicate suppression. |
-| `validate_output()` compliance level | `PARTIAL` (never `FULL`, never silently). |
-| `detect_blocks(html)` | Does not include the name. |
-| `extract_blocks(html, names)` | Returns `""` for the name. |
-| `extract_blocks(html)` (default) | Omits the name from the result mapping. |
+The templates layer exports:
 
-The rationale is that duplicate same-name blocks are always a render bug;
-exposing one of them to consumers as canonical would corrupt downstream
-data, and reporting them as both `duplicate` and `unclosed` would
-double-count the same defect. Consumers that need to debug a duplicate
-open inspect `ValidationResult.duplicate_blocks` directly. Consumers
-checking strict compliance use `is_compliant`, which is `False` whenever
-any of `duplicate_blocks`, `missing_blocks`, `extra_blocks`,
-`out_of_order`, or `unclosed_blocks` is non-empty.
+- `TemplateMetadata`
+- `PageTemplate`
+- `JinjaPageTemplate`
+- `bind_data`
+- `safe_value`
+- `detect_blocks`
+- `validate_output`
+- `extract_blocks`
+- `TemplateRegistry`
 
-### 3.4 Why this grammar (and not the AEDIFEX spec's)
+## 5. Template Metadata And Rendering
 
-The AEDIFEX reference validator used `(\w+)` for name capture and exact-string
-search for opening markers. That validator would reject already-shipped
-production output that uses hyphenated names (`how-to-use`) and annotated
-openings (`signup (placeholder for MailerLite - prevents layout shift)`).
-Calliope's grammar accepts the production shape so existing pages migrate
-without false-failure noise.
-
-## 4. Template metadata
+### 5.1 TemplateMetadata
 
 ```python
 @dataclass(frozen=True)
 class TemplateMetadata:
-    template_name: str          # e.g. "page.dimension"
-    version: str                # PEP 440 / SemVer
-    blocks: tuple[str, ...]     # ordered, unique
+    template_name: str
+    version: str
+    blocks: tuple[str, ...]
     required_fields: tuple[str, ...] = ()
     optional_fields: tuple[str, ...] = ()
-    fallbacks: Mapping[str, Any] = MappingProxyType({})
+    fallbacks: Mapping[str, Any] = field(default_factory=dict)
 ```
 
-Tuples (not lists) and a `MappingProxyType` wrapped around a defensive copy
-make metadata immutable. `TemplateMetadata` is not hashable because
-`fallbacks` accepts arbitrary mapping values. `blocks` is **ordered** — the
-validator checks order, not just membership. `template_name` uses a dotted
-namespace; the segment before the first dot is the rendering category
-(`page`, `card`, `asset`).
+`TemplateMetadata` is an immutable page-shell contract.
 
-The metadata is the page-shell contract. It is **not** the full data
-contract. Page-specific render context (CSS paths, navigation items, asset
-hashes) is supplied at render time as additional context, not declared in
-metadata. This is the deliberate departure from the AEDIFEX reference
-`bind_data()`, which only preserved metadata-declared keys and forced sample
-templates to use a second `default_context` channel.
+- `template_name` and `version` must be non-empty.
+- `blocks` is an ordered tuple and must be unique.
+- `fallbacks` is defensively copied into a `MappingProxyType`.
+- the class is explicitly unhashable.
 
-## 5. PageTemplate ABC
+### 5.2 Data Binding
+
+```python
+def safe_value(value: Any, *, escape_html: bool = True) -> str: ...
+
+def bind_data(
+    metadata: TemplateMetadata,
+    data: Mapping[str, Any],
+    *,
+    strict: bool = True,
+) -> tuple[Mapping[str, Any], tuple[str, ...]]: ...
+```
+
+`bind_data` preserves undeclared keys. Metadata is a contract for
+required and optional fields, not a whitelist. In strict mode, missing
+required fields raise `ValueError`. In lenient mode, fallbacks are used
+and warnings are returned.
+
+### 5.3 PageTemplate
 
 ```python
 class PageTemplate(ABC):
     @property
-    @abstractmethod
     def metadata(self) -> TemplateMetadata: ...
-
-    @abstractmethod
     def render(
         self,
         data: Mapping[str, Any],
@@ -162,51 +154,58 @@ class PageTemplate(ABC):
     ) -> str: ...
 ```
 
-`render` accepts any `Mapping[str, Any]` — including dicts, `MappingProxyType`,
-or per-row mappings derived from `df.iter_rows(named=True)`. Subclasses must
-not mutate `data`. Calliope ships `JinjaPageTemplate(PageTemplate)` as the
-recommended concrete base; subclasses provide a Jinja `Environment` and
-`jinja_template_name` loader key and override `bind_context()` to shape
-per-page data.
+`PageTemplate` is the abstract page-shell contract.
 
-## 6. Polars boundary
+### 5.4 JinjaPageTemplate
 
-Calliope does not call any Polars constructor. Adapters supply data; calliope
-consumes it.
+```python
+class JinjaPageTemplate(PageTemplate):
+    jinja_template_name: str = ""
+```
 
-| Stage | Polars role |
-|---|---|
-| Card render | Adapter calls `df.iter_rows(named=True)` and feeds each `dict` to a card renderer. |
-| Page render | Adapter computes per-page aggregates and passes `Mapping[str, Any]`. |
-| Render driver (Stage 5+) | Operates on iterables of pages; never materializes the full site eagerly. |
+`JinjaPageTemplate` binds data and context into a Jinja2 environment.
+Subclasses must set `jinja_template_name` and provide `metadata`.
+Subclasses must not mutate caller-supplied `data`.
 
-`bind_data()` operates on a single `Mapping[str, Any]` and returns a single
-bound mapping plus warnings. There is no list-of-pages variant. Pagination
-lives in `calliope.render`, not in `calliope.templates`.
+## 6. Validation And Extraction
 
-## 7. Registry
+```python
+def detect_blocks(html: str) -> tuple[str, ...]: ...
+def validate_output(
+    html: str,
+    expected_blocks: Iterable[str],
+    data_warnings: Iterable[str] = (),
+) -> ValidationResult: ...
+def extract_blocks(html: str) -> Mapping[str, str]: ...
+```
 
-`calliope.templates.registry.TemplateRegistry` is a minimal dependency-injected
-store of templates keyed by `(template_name, version)`. There is no global
-singleton; adapters or test fixtures construct one and inject it where needed.
+`extract_blocks` returns block-name to inner-HTML mappings for paired,
+non-duplicate blocks. Duplicate names are intentionally suppressed from
+the extracted mapping; callers consult `ValidationResult.duplicate_blocks`
+when that distinction matters.
 
-Versions are validated at `register()` time via `packaging.version.Version`.
-Registering the same `(template_name, version)` twice raises `ValueError`
-unless `register(..., replace=True)` is used explicitly.
+## 7. Registry And Shell Helpers
 
-Multi-version coexistence is supported by the data model (`(name, version)`
-key) but is not enforced or required at Stage 1. The reference AEDIFEX
-registry sorted by lexicographic string and exposed a mutable global; both
-choices are explicitly rejected. When selection among versions is needed,
-comparison goes through `packaging.version.Version`, not string sort.
+### 7.1 TemplateRegistry
 
-## 8. Render results
+```python
+class TemplateRegistry:
+    def register(self, template: PageTemplate, *, replace: bool = False) -> None: ...
+    def get(self, template_name: str, version: str | None = None) -> PageTemplate: ...
+```
 
-`RenderResult` lives in `calliope.render.results`, **not** in
-`calliope.templates`. Templates produce HTML; the render driver produces
-results. Mixing the two coupled bind / render / validate / extract / write
-into one mutable object in the AEDIFEX reference; Calliope keeps these
-concerns separate.
+There is no global registry. Adapters construct and inject a
+`TemplateRegistry` instance. Template versions use PEP 440 ordering via
+`packaging.version.Version`; `get(name)` without a version selects the
+highest registered version.
+
+### 7.2 Shell Helpers
+
+`calliope.templates.shell` provides parameterized HTML-shell helpers.
+These are utilities, not domain templates, and must remain free of
+adapter branding and jurisdiction-specific strings.
+
+## 8. RenderResult
 
 ```python
 @dataclass(frozen=True)
@@ -219,281 +218,89 @@ class RenderResult:
     render_time_ms: float
 ```
 
+`RenderResult` is produced by render-stage code, not by templates
+directly. It remains in `calliope.render` so the templates layer does
+not import render-driver concerns.
+
 ## 9. Cards
 
-`calliope.cards` ships substrate primitives for per-row card renderers.
-The cleanroom card sources are domain-coupled to DBPR / Florida / RiskyEats
-taxonomies; calliope retains only the substrate abstractions and pushes
-domain literals into adapters.
+`calliope.cards` ships substrate primitives for row-level rendering.
 
 ### 9.1 CardRenderer Protocol
 
-```python
-@runtime_checkable
-class CardRenderer(Protocol):
-    @property
-    def metadata(self) -> TemplateMetadata: ...
-    def render(
-        self,
-        row: Mapping[str, Any],
-        context: Mapping[str, Any] | None = None,
-    ) -> str: ...
-```
+`CardRenderer` is a runtime-checkable structural protocol for anything
+that can render a single row mapping to HTML.
 
-Per-row semantics: `render()` is called once per data row with that
-row's mapping. Site-level aggregates and navigation belong in
-`calliope.pages`, not here. The Protocol is `runtime_checkable` so
-adapters can pick a renderer by structural match without subclassing.
+### 9.2 CardTemplate Bases
 
-### 9.2 CardTemplate ABC + JinjaCardTemplate
-
-`CardTemplate` mirrors `PageTemplate` (metadata + render + the same
-helpers `expected_blocks` and `required_fields`) but with per-row
-semantics. `JinjaCardTemplate` is the concrete Jinja2-aware base;
-subclasses set `jinja_template_name` and override `bind_context()` to
-shape the per-row mapping before rendering.
+`CardTemplate` is the abstract base. `JinjaCardTemplate` is the Jinja2
+implementation for row-oriented rendering.
 
 ### 9.3 Taxonomy
 
-```python
-@dataclass(frozen=True)
-class TaxonomyEntry:
-    label: str
-    css_class: str = ""
-    color: str | None = None
+`TaxonomyEntry` and `Taxonomy` capture domain-key to display-attribute
+lookups. Entries are defensively copied and the mapping-bearing class is
+explicitly unhashable.
 
-@dataclass(frozen=True)
-class Taxonomy:
-    name: str
-    entries: Mapping[str, TaxonomyEntry]
-    fallback: TaxonomyEntry
-```
+### 9.4 Pills
 
-Subsumes the cleanroom pattern of repeated per-domain dicts
-(`LICENSE_TYPE_MAP`, `INSPECTION_TYPE_MAP`, `DISPOSITION_MAP`,
-`ENTITY_TYPE_MAP`). Adapters supply concrete entries; calliope ships
-zero domain-specific taxonomy data. Defensive-copy semantics match
-`TemplateMetadata`: entries are stored in a `MappingProxyType`, the
-class is explicitly unhashable. Keys are string-only; non-`str` keys are
-rejected at construction, and lookup does not coerce key types.
+`Pill`, `render_pill`, and `render_pills` provide inline badge
+renderers. `Pill.from_taxonomy(entry)` supports the common taxonomy
+lookup path.
 
-### 9.4 Pill
+### 9.5 Heatbars
 
-```python
-@dataclass(frozen=True)
-class Pill:
-    label: str
-    css_class: str = ""
-    color: str | None = None
-    title: str | None = None
-```
+`HeatbarSegment` and `render_heatbar()` render weighted, segmented fill
+bars. Score calculation stays in adapters; calliope only renders.
 
-`render_pill(pill)` and `render_pills(pills)` produce the inline-badge
-HTML that adapters compose into card bodies. `Pill.from_taxonomy()`
-adapts a `TaxonomyEntry` into a `Pill` for the common
-"taxonomy-lookup → render" path. Labels are HTML-escaped via
-`templates.safe_value`.
+### 9.6 Tiers
 
-### 9.5 Heatbar
+`Tier`, `TierTable`, and `make_tier_table()` classify scores into
+labels. Boundary and sorting behavior are defined by the table, not by
+adapter conventions.
 
-```python
-@dataclass(frozen=True)
-class HeatbarSegment:
-    weight: float
-    css_class: str = ""
-    color: str | None = None
-    title: str | None = None
-```
+### 9.7 Formatting Helpers
 
-`render_heatbar(segments, fill_pct=…)` renders a colored bar that fills
-`fill_pct` percent of its container width. Segments split that filled
-width proportionally by `weight`. `fill_pct` is clamped to `[0, 100]`;
-zero-weight and non-finite-weight segments are skipped. Score
-*calculation* lives in adapters; calliope only renders.
-
-### 9.6 Tier classification
-
-```python
-@dataclass(frozen=True)
-class Tier:
-    name: str
-    label: str
-    min_score: float = 0.0
-    emoji: str | None = None
-    css_class: str = ""
-    color: str | None = None
-
-@dataclass(frozen=True)
-class TierTable:
-    name: str
-    tiers: tuple[Tier, ...]    # sorted ascending by min_score
-    def classify(self, score: float) -> Tier: ...
-```
-
-`TierTable.classify(score)` returns the tier with the highest
-`min_score` not exceeding `score`, or the lowest tier if `score` is
-below every threshold. Duplicate `min_score` thresholds are rejected at
-construction with `ValueError`. `make_tier_table(name, iterable)`
-accepts any iterable of tiers and sorts/freezes them.
-
-### 9.7 Formatters
-
-`format_iso_date(value)` and `slugify(text)` are pure utilities. They
-are domain-agnostic; adapter-specific date-shape parsers (e.g. Sunbiz
-`MMDDYYYY`) and adapter-specific business-age calculations stay in the
-adapter, not in calliope. `slugify(text, separator=..., max_length=...)`
-trims leading and trailing runs of the chosen separator, returns `""`
-for `max_length=0`, and rejects negative `max_length` with
-`ValueError`. When `max_length` truncation lands inside a separator run,
-the trailing non-alphanumeric characters are stripped so the output
-ends in an alphanumeric. This preserves `slugify(slugify(x)) ==
-slugify(x)` for any separator made entirely of non-alphanumeric
-characters (the supported and recommended case). Separators that
-contain alphanumeric characters are not idempotent because alphanumerics
-inside a separator survive the next pass through the slug logic;
-callers should use only non-alphanumeric separators (`-`, `_`, `--`,
-etc.).
+`format_iso_date` and `slugify` are pure helpers with no domain
+knowledge.
 
 ## 10. Pages
 
 `calliope.pages` ships substrate-shaped page-composition primitives.
-Like cards, the cleanroom page generators are heavily DBPR / Florida
-domain-coupled, so calliope re-designs the substrate-shaped abstractions
-and pushes domain-specific page logic into adapters.
 
 ### 10.1 Pagination
 
-```python
-@dataclass(frozen=True)
-class Pagination:
-    page_number: int       # 1-based
-    total_pages: int
-    items_per_page: int
-    total_items: int
-
-@dataclass(frozen=True)
-class PaginationPage:
-    pagination: Pagination
-    items: tuple[T, ...]
-
-def paginate(items: Sequence[T], items_per_page: int) -> Iterator[PaginationPage]: ...
-```
-
-`paginate()` is a streaming iterator: render drivers can iterate
-without materializing the full site at once. It always emits at least
-one page (an empty index page is still a valid page). `Pagination`
-exposes `is_first` / `is_last` / `has_previous` / `has_next` /
-`previous_page` / `next_page` for nav-link templates. Construction is
-strict: `total_pages` must equal
-`max(1, ceil(total_items / items_per_page))`.
+`Pagination`, `PaginationPage`, and `paginate()` split iterables into
+1-based pages. Empty input still emits one page with `total_pages=1`.
 
 ### 10.2 Hero
 
-```python
-@dataclass(frozen=True)
-class Hero:
-    title: str
-    subtitle: str = ""
-    background_image: str | None = None
-    background_gradient: str | None = None
-    cta_label: str | None = None
-    cta_href: str | None = None
-    cta_class: str = "hero-cta"
-```
-
-`render_hero(hero)` emits a `<section class="hero">…</section>`
-wrapped in calliope marker comments (`<!-- BLOCK:hero -->` /
-`<!-- /BLOCK:hero -->`) so pages that include a hero can validate the
-section as a discrete block. Title / subtitle / CTA label are
-HTML-escaped via `templates.safe_value`; `cta_href`, `cta_class`, and
-the `container_class` render argument are emitted as escaped attribute
-text. The CTA renders only when both label and href are set. `Hero`
-accepts at most one of `background_image`, `background_gradient`.
-Class-list fields accept only ASCII letters, digits, `_`, `-`, and
-single spaces between tokens, and reject HTML entity references
-matching `&[#a-zA-Z0-9]+;?` at construction. `background_image`
-rejects `"`, `'`, `\n`, `\r`, and HTML entity references matching
-`&[#a-zA-Z0-9]+;?`; `background_gradient` rejects those characters plus
-`;` and the same entity references before render-time so inline CSS
-cannot break out of its attribute or append a second declaration after
-HTML decoding.
+`Hero` and `render_hero()` render the above-the-fold section and emit a
+`hero` block marker pair.
 
 ### 10.3 Scoreboard
 
-```python
-@dataclass(frozen=True)
-class ScoreboardRow:
-    label: str
-    count: int = 0
-    href: str | None = None
-    color: str | None = None
-    css_class: str = ""
-
-@dataclass(frozen=True)
-class Scoreboard:
-    title: str
-    rows: tuple[ScoreboardRow, ...]
-    total_label: str = "TOTAL"
-    show_total: bool = True
-    container_class: str = "scoreboard"
-    @property
-    def total(self) -> int: ...
-```
-
-`render_scoreboard(scoreboard)` emits a `<section class="scoreboard">…
-</section>` block. Rows with `href` set render as `<a>`; rows without
-render as `<div>`. `count` is required `>= 0`. `make_scoreboard(title,
-iterable)` is a convenience constructor that accepts any iterable.
-`href`, `css_class`, and `container_class` are emitted as escaped
-attribute text. Class-list fields accept only ASCII letters, digits,
-`_`, `-`, and single spaces between tokens, and reject HTML entity
-references matching `&[#a-zA-Z0-9]+;?` at construction. `color`
-rejects `"`, `'`, `\n`, `\r`, `;`, and HTML entity references matching
-`&[#a-zA-Z0-9]+;?` before render-time so inline CSS cannot append
-attacker-controlled declarations after HTML decoding.
+`ScoreboardRow`, `Scoreboard`, `make_scoreboard()`, and
+`render_scoreboard()` render titled tabular summaries and emit a
+`scoreboard` block marker pair.
 
 ### 10.4 Narrative
 
-```python
-@runtime_checkable
-class NarrativeRenderer(Protocol):
-    def render(self, signals: Mapping[str, Any]) -> str: ...
+`NarrativeRenderer` is a protocol. `TemplateNarrativeRenderer` is the
+Jinja2-backed implementation. AI- or model-driven narrative generators
+belong in adapters.
 
-class TemplateNarrativeRenderer:
-    def __init__(self, environment: Environment, template_name: str): ...
-```
+### 10.5 Canonical Block Tuples
 
-The Protocol decouples narrative composition from any specific backend.
-`TemplateNarrativeRenderer` ships as the default Jinja2-backed
-implementation; AI-driven renderers belong in adapters (calliope ships
-no AI client). Rendered output is whitespace-stripped at the boundary.
+`INDEX_PAGE_BLOCKS`, `LIST_PAGE_BLOCKS`, `DIMENSION_PAGE_BLOCKS`, and
+`DETAIL_PAGE_BLOCKS` provide reusable ordered block contracts for page
+templates.
 
-### 10.5 Canonical block-name tuples
+## 11. Render Drivers
 
-The following tuples are recommended `TemplateMetadata.blocks` values
-for common page archetypes. Adapters can define their own; the
-canonical tuples make cross-adapter pages consistent for downstream
-tooling:
+`calliope.render` executes batches of render jobs.
 
-| Tuple | Sequence |
-|---|---|
-| `INDEX_PAGE_BLOCKS` | head, header, nav, hero, scoreboard, content, footer |
-| `LIST_PAGE_BLOCKS` | head, header, nav, filters, list, pagination, footer |
-| `DIMENSION_PAGE_BLOCKS` | head, header, nav, how-to-use, stats, signup, news, content, legal, footer |
-| `DETAIL_PAGE_BLOCKS` | head, header, nav, summary, details, related, footer |
-
-`DIMENSION_PAGE_BLOCKS` matches the production sequence at
-`L1_metagenerator.py:1331-1369` verbatim; calliope keeps that tuple
-stable so pages lifted with this sequence validate without custom
-metadata.
-
-## 11. Render drivers
-
-`calliope.render` ships substrate-shaped render-execution primitives.
-Concrete per-dimension generators (the cleanroom `L1_*_generator.py`
-family) are domain-specific and live in adapters, not in calliope.
-
-### 11.1 Renderable Protocol
+### 11.1 Renderable And RenderDriver Protocols
 
 ```python
 @runtime_checkable
@@ -505,189 +312,270 @@ class Renderable(Protocol):
         data: Mapping[str, Any],
         context: Mapping[str, Any] | None = None,
     ) -> str: ...
+
+@runtime_checkable
+class RenderDriver(Protocol):
+    def run(self, jobs: Iterable[RenderJob]) -> RenderReport: ...
 ```
 
-`PageTemplate`, `JinjaPageTemplate`, `CardTemplate`, `JinjaCardTemplate`,
-and any structurally-matching adapter class satisfy this Protocol.
-`RenderJob` holds a `Renderable`; drivers consume jobs, not specific
-template subclasses.
+`Renderable` is satisfied structurally by page templates, card
+templates, and matching adapter classes.
 
 ### 11.2 RenderJob
 
 ```python
 @dataclass(frozen=True)
 class RenderJob:
-    name: str                                  # for logging / reporting
+    name: str
     renderable: Renderable
-    data: Mapping[str, Any] = {}               # defensively copied
-    context: Mapping[str, Any] | None = None   # defensively copied if set
-    output_path: Path | None = None            # if set, driver writes HTML here
+    data: Mapping[str, Any] = field(default_factory=dict)
+    context: Mapping[str, Any] | None = None
+    output_path: Path | None = None
 ```
 
-`data` and `context` are wrapped in `MappingProxyType` at construction
-to prevent caller-side mutation from leaking into rendering. `name` is
-required and non-empty; jobs are unhashable because they hold mappings.
-If `output_path` is `None`, the driver returns the rendered HTML in the
-outcome and writes nothing.
+`data` and `context` are defensively copied into read-only mappings.
+`output_path=None` means the rendered HTML is returned in the report and
+not written to disk.
 
-### 11.3 JobOutcome and RenderReport
+### 11.3 JobOutcome And RenderReport
+
+Drivers return `RenderReport(outcomes=...)`, where each `JobOutcome`
+captures success, duration, optional `output_path`, optional
+`html_output`, and optional error information.
+
+Drivers capture `Exception` subclasses into failed outcomes. `BaseException`
+subclasses propagate intentionally.
+
+### 11.4 SerialRenderDriver
+
+Runs jobs one at a time and returns outcomes in input order.
+
+### 11.5 ThreadedRenderDriver
+
+Runs jobs through `ThreadPoolExecutor` and also returns outcomes in
+input order. Parent directories are created automatically for
+file-backed jobs. File writes are atomic at the render-driver layer.
+
+## 12. Assets
+
+`calliope.assets` ships static asset bundling with content-hashed
+filenames.
+
+### 12.1 Asset
 
 ```python
 @dataclass(frozen=True)
-class JobOutcome:
-    name: str
-    success: bool
-    duration_ms: float
-    output_path: Path | None = None
-    html_output: str | None = None
-    error: str | None = None
-    error_type: str | None = None
-
-@dataclass(frozen=True)
-class RenderReport:
-    outcomes: tuple[JobOutcome, ...]
-    @property
-    def total_jobs(self) -> int: ...
-    @property
-    def success_count(self) -> int: ...
-    @property
-    def failure_count(self) -> int: ...
-    @property
-    def total_duration_ms(self) -> float: ...
-    @property
-    def is_clean(self) -> bool: ...
-    def failures(self) -> tuple[JobOutcome, ...]: ...
+class Asset:
+    logical_path: str
+    content: bytes
+    content_hash: str
+    media_type: str | None = None
 ```
 
-`JobOutcome` invariants: `success=True` excludes a non-empty `error`,
-`duration_ms >= 0`. When the job had no `output_path`, the rendered
-HTML is in `html_output`; when it did, `html_output` is `None` and
-`output_path` is the file path. For per-job execution, drivers capture
-every `Exception` raised by `render()` or the file-output path as
-`success=False` with `error` and `error_type` populated. `BaseException`
-subclasses (notably `KeyboardInterrupt` and `SystemExit`) propagate
-intentionally so ctrl-C and explicit process exits keep their normal
-semantics.
+`logical_path` must be relative and non-empty. `content_hash` must be
+non-empty lowercase hex. `published_path` inserts the hash before the
+final suffix, preserving subdirectories.
 
-### 11.4 RenderDriver Protocol
+### 12.2 Hashing
+
+```python
+DEFAULT_HASH_LENGTH = 10
+MIN_HASH_LENGTH = 4
+MAX_HASH_LENGTH = 64
+
+def hash_content(data: bytes, *, length: int = DEFAULT_HASH_LENGTH) -> str: ...
+```
+
+Calliope uses SHA-256 truncated to `length`. The hash is deterministic
+and length-stable.
+
+### 12.3 AssetManifest
+
+```python
+@dataclass(frozen=True)
+class AssetManifest:
+    entries: Mapping[str, str]
+
+def manifest_from_assets(assets: Iterable[Asset]) -> AssetManifest: ...
+```
+
+`AssetManifest` is an immutable lookup from logical path to published
+path. Entries are stored in a `MappingProxyType`, the class is
+explicitly unhashable, and duplicate logical paths are rejected.
+
+### 12.4 Bundling
+
+```python
+def collect_assets(
+    source_dir: Path,
+    *,
+    hash_length: int = DEFAULT_HASH_LENGTH,
+    excludes: Iterable[str] = (),
+) -> tuple[Asset, ...]: ...
+
+def bundle_assets(
+    source_dir: Path,
+    output_dir: Path,
+    *,
+    hash_length: int = DEFAULT_HASH_LENGTH,
+    excludes: Iterable[str] = (),
+) -> AssetManifest: ...
+```
+
+`collect_assets` reads every safe regular file under `source_dir` and
+returns `Asset` tuples. Symlinks are always rejected, even when they
+resolve back into `source_dir`. `excludes` skips either an exact
+relative file path or an entire relative subtree.
+
+`bundle_assets` additionally writes each asset to
+`output_dir/<published_path>` and returns the manifest.
+
+When `output_dir` resolves inside `source_dir`, `bundle_assets`
+automatically adds the output directory's source-relative path to
+`excludes` before walking the tree. That makes reruns idempotent for
+nested outputs such as `bundle_assets(src, src / "dist")`.
+
+Calliope intentionally does not minify, compile, or transform asset
+content. Adapters that need bundling preprocess their source directory
+before calling `bundle_assets`.
+
+### 12.5 HTML Rewriting
+
+```python
+def rewrite_html_with_manifest(
+    html: str,
+    manifest: AssetManifest,
+    *,
+    base_path: str = "",
+) -> str: ...
+```
+
+Regex-based substitution of `href="..."`, `src="..."`, and `url(...)`
+references. When `base_path` is set, both bare logical paths
+(`main.css`) and prefixed paths (`/static/main.css`) resolve to the
+prefixed published form (`/static/main.abcd.css`). When `base_path` is
+empty, bare paths resolve as-is and `./logical-path` is preserved.
+
+Adapters with more complex rewriting needs, such as JS module imports,
+dynamic loaders, or Subresource Integrity handling, should use a real
+HTML parser.
+
+## 13. Deploy
+
+`calliope.deploy` ships the substrate. Production deploy adapters
+(Tiiny.host, GitHub Pages, Netlify, S3+CloudFront) live in adapters or
+external packages.
+
+### 13.1 DeployTarget Protocol
 
 ```python
 @runtime_checkable
-class RenderDriver(Protocol):
-    def run(self, jobs: Iterable[RenderJob]) -> RenderReport: ...
+class DeployTarget(Protocol):
+    @property
+    def name(self) -> str: ...
+    def deploy(self, local_dir: Path) -> DeployResult: ...
 ```
 
-Calliope ships two concrete drivers:
+Implementations capture all errors as failed `DeployResult`s and never
+raise `Exception`. `BaseException` propagates intentionally.
 
-- `SerialRenderDriver` — runs jobs in submission order, one at a time.
-  Use in tests, single-page renders, or when deterministic ordering
-  matters.
-- `ThreadedRenderDriver(max_workers=…)` — runs jobs in a
-  `ThreadPoolExecutor`. Threads sidestep pickling so adapters can pass
-  renderables that close over Jinja2 environments and other unpicklable
-  state. CPython's GIL means threads do not give CPU parallelism for
-  HTML rendering itself, but they help when the renderable is
-  I/O-bound (database queries inside `bind_context`, asset hashing,
-  network calls).
+### 13.2 DeployResult
 
-A process-pool render driver is **not** shipped because Jinja2
-`Environment` objects, adapter callbacks, and many adapter-defined
-renderable classes are not picklable, and the resulting deserialization
-errors are confusing failure modes for a substrate. Adapters that need
-real CPU parallelism should write their own process-pool driver
-backed by either pickling-clean renderables or a fork-based pool.
+```python
+@dataclass(frozen=True)
+class DeployResult:
+    target_name: str
+    success: bool
+    duration_ms: float
+    files_uploaded: int = 0
+    bytes_uploaded: int = 0
+    target_url: str | None = None
+    error: str | None = None
+    error_type: str | None = None
+```
 
-Drivers validate the full batch before rendering begins. If two jobs in
-the same `run()` call share the same non-`None` `output_path`, `run()`
-raises `ValueError` naming the duplicated path and rejects the entire
-batch before any renderable is called.
+`target_name` must be non-empty. `duration_ms`, `files_uploaded`, and
+`bytes_uploaded` must be non-negative. `success=True` excludes a
+non-empty `error`.
 
-### 11.5 File output convention
+### 13.3 LocalDeployTarget
 
-When `RenderJob.output_path` is set, the driver:
+```python
+class LocalDeployTarget:
+    def __init__(self, destination: Path, *, clear_existing: bool = False): ...
+```
 
-1. Calls `path.parent.mkdir(parents=True, exist_ok=True)`.
-2. Writes the rendered HTML to a temp file in the same parent directory
-   using UTF-8 and a sibling filename derived from the final path (for
-   example `page.html.tmp.<uuid>`).
-3. Publishes atomically with `os.replace(tmp_path, path)`, so an
-   existing file is replaced in one step rather than truncated in place.
-4. Reports the path in `JobOutcome.output_path`; leaves `html_output`
-   `None` to keep the report compact for large sites.
+Copies every safe regular file under `local_dir` into `destination`,
+preserving subdirectory layout and file metadata via `shutil.copy2`.
+Symlinks are always skipped, even when they resolve back into
+`local_dir`. When `clear_existing=True`, the existing destination is
+removed first with `shutil.rmtree`. Default behavior preserves any
+existing files already present at the destination.
 
-Any `Exception` raised during the write or replace step is captured and
-reported as a failed outcome with `error_type` set (for example
-`UnicodeEncodeError`, `LookupError`, `FileExistsError`,
-`NotADirectoryError`, `PermissionError`, or a replace failure). The
-driver attempts to remove the temp file before returning that failed
-outcome. `BaseException` subclasses propagate intentionally.
+Deploy fails with a `ValueError` result when `destination` resolves to
+the same directory as `local_dir` or a descendant of it, preventing
+self-copy recursion (`destination/destination/...`).
 
-## 12. Stage map
+Atomic replacement and rollback on mid-copy failure remain future work
+and are intentionally not implemented in this stage.
+
+### 13.4 DryRunDeployTarget
+
+```python
+class DryRunDeployTarget:
+    @property
+    def name(self) -> str = "dryrun"
+```
+
+Walks `local_dir`, counts safe regular files and total bytes, writes
+nothing, and returns a successful `DeployResult` with `target_url=None`.
+Symlinks are always skipped, even when they resolve back into
+`local_dir`.
+
+## 14. Stage Map
 
 | Stage | Subpackage | Lift sources |
 |---|---|---|
 | 1 | `templates` | spec; `aedifex_template.py` (sanitized helpers); production marker fixtures from `L1_metagenerator.py` |
 | 2 | `cards` | substrate primitives designed from spec; `card_components.py` family is reference material, not lift source |
-| 3 | `pages` | substrate primitives (pagination, hero, scoreboard, narrative); `L1_landing_generator.py` / `L1_metagenerator.py` / `L1_narrative.py` are reference material — concrete domain page generators stay in adapters |
-| 4 *(this stage)* | `render` | substrate primitives (`Renderable`, `RenderJob`, `RenderDriver`, `SerialRenderDriver`, `ThreadedRenderDriver`); `L1_render_parallel.py` / `L1_render_static_pro.py` are reference material — concrete per-dimension renderers stay in adapters |
-| 5 | `deploy` | `deploy_tiiny.py` |
-| 6 | tag `calliope v0.1.0` | — |
+| 3 | `pages` | substrate primitives (pagination, hero, scoreboard, narrative); `L1_landing_generator.py` / `L1_metagenerator.py` / `L1_narrative.py` are reference material |
+| 4 | `render` | substrate primitives (`Renderable`, `RenderJob`, `RenderDriver`, `SerialRenderDriver`, `ThreadedRenderDriver`) |
+| 5 | `assets` + `deploy` | substrate primitives (`Asset`, `AssetManifest`, `bundle_assets`, `rewrite_html_with_manifest`; `DeployTarget`, `DeployResult`, `LocalDeployTarget`, `DryRunDeployTarget`) |
+| 6 | tag `calliope v0.1.0` | first stable release; gated on cards + pages + render + deploy each having a working primitive |
 
-See `docs/LIFT_PATTERN.md` for the per-file lift methodology.
+See `docs/LIFT_PATTERN.md` for per-file lift methodology.
 
-## 13. Versioning
+## 15. Versioning
 
-- **Major:** structural change to marker grammar, `TemplateMetadata` shape, or
-  subpackage boundaries.
-- **Minor:** new `PageTemplate` subclasses, new `bind_data()` features that
-  preserve the existing contract.
-- **Patch:** bug fixes, documentation, fallback tweaks, internal refactors.
+- Major: structural change to marker grammar, `TemplateMetadata`
+  shape, or subpackage boundaries.
+- Minor: new primitives or features that preserve existing contracts.
+- Patch: bug fixes, documentation, fallback tweaks, and internal
+  refactors.
 
-Calliope follows PEP 440. The first stable tag is `v0.1.0`, gated on at least
-one working primitive in each of cards, pages, render, deploy.
+Calliope follows PEP 440. The first stable tag is `v0.1.0`.
 
-## 14. Security posture
+## 16. Security Posture
 
-Calliope is a rendering substrate, not an XSS prevention layer. Its
-guarantees about caller-supplied input are scoped:
+Calliope is a local rendering substrate, not a sandbox.
 
-| Surface | Calliope's behavior | Adapter's responsibility |
-|---|---|---|
-| Text content (page body, card body, scoreboard labels, hero title/subtitle/CTA label, narrative output) | HTML-escaped via `templates.safe_value` (escapes `<`, `>`, `&`, `"`, `'`). | Pass plain text; calliope handles escaping. |
-| `Hero` style-bound fields (`background_image`, `background_gradient`, `cta_class`) | Validated at construction: rejects raw or HTML-entity-encoded `"`, `'`, `\n`, `\r`, `;` (declaration values only). Validators decode via Python's HTML5 entity table (`html.unescape()`), so legacy named entities like `&quot` without `;` are caught. | Sanitize URLs and CSS values from untrusted sources before construction. |
-| `Scoreboard.container_class`, `ScoreboardRow.color`, `ScoreboardRow.css_class` | Same construction-time validation as Hero's class/style fields. | Same — sanitize untrusted values. |
-| Href fields (`Hero.cta_href`, `ScoreboardRow.href`) | HTML-escaped at render time via `safe_value` (renders inside `href="..."`). **Not** validated at construction; calliope is not a URL validator. | Sanitize URL inputs (scheme, encoding) at the adapter layer. |
-| Other attribute sinks (`Pill.css_class`, `Pill.color`, `HeatbarSegment.css_class`/`color`, `templates.shell.html_head` `stylesheets`/`scripts`, `templates.shell.navigation` href values) | **No construction-time validation.** Values are interpolated into HTML/CSS attributes verbatim. | **Sanitize before passing to calliope.** Adapters that render attacker-controlled data through these surfaces must escape and validate at the adapter layer. |
+- Template rendering trusts the adapter-selected template environment.
+- HTML rewriting is regex-based and intentionally narrow.
+- Asset and deploy walkers reject symlinked files.
+- No credential storage or remote deploy logic ships in the substrate.
+- Adapters are responsible for CSP, sanitization policy, secret
+  management, and network-facing security controls.
 
-The validators in `calliope.pages._validation` are **defense-in-depth**,
-not a complete sanitization layer. Building a complete sanitization
-layer for HTML/CSS attribute contexts is a substantial security
-project (the WHATWG HTML5 parser has many decoding edge cases) that
-belongs in a dedicated library, not the rendering substrate. Adapters
-that handle untrusted input should run their own sanitization (e.g.
-[bleach](https://bleach.readthedocs.io/), [nh3](https://nh3.readthedocs.io/),
-or a domain-specific allow-list) before passing values to calliope.
+## 17. What Calliope Is Not
 
-The validator's `html.unescape()` pass is **single-pass**, which
-matches browser behavior: HTML attribute values are decoded once.
-Inputs like `&amp;quot;` decode to the literal string `&quot;` and are
-emitted as-is — the browser does not recursively decode, so this is
-not a bypass.
+Calliope is not:
 
-Calliope's validators on Hero/Scoreboard exist because those
-dataclasses encapsulate domain-meaningful semantics (a hero
-*background image* is conceptually a URL; a CSS *gradient* is a
-declaration value); rejecting obviously-broken inputs at construction
-catches typos and trivial misuse without claiming to be a complete
-escape barrier.
+- a CMS,
+- a full JavaScript or CSS build pipeline,
+- a domain data model,
+- a production deploy orchestrator,
+- an HTML sanitizer,
+- an adapter registry or app framework.
 
-## 15. What calliope is not
-
-- A general-purpose template engine. Use Jinja2 directly for that.
-- A site framework. Calliope renders pages; site structure is the adapter's
-  problem.
-- A CMS. Calliope is a deterministic build pipeline, not an authoring tool.
-- A complete reimplementation of AEDIFEX/ASSG. Calliope adopts the marker
-  contract and validation idea; it does not adopt the reference implementation.
-- An XSS sanitizer or HTML attribute escape layer. See §14 for the
-  security boundary.
+Its job is to provide stable rendering, asset, and deploy primitives so
+adapters can compose policy and domain behavior on top.
