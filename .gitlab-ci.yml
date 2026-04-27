@@ -1,0 +1,47 @@
+# calliope CI — lint + import smoke + pytest.
+# Phase 7 Stage 0 baseline; lint+test gate hardens once real
+# primitives land (Stages 1+).
+
+# Trigger gate aligned with the rest of the fleet (clio, etlantis,
+# ic-engine, InvestorClaw) — push + merge_request_event + tags.
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_TAG'
+
+stages:
+  - lint
+  - test
+
+default:
+  image: python:3.13-slim
+  before_script:
+    - apt-get update -qq && apt-get install -qq -y curl git build-essential
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
+    - uv --version
+
+lint:ruff:
+  stage: lint
+  script:
+    - uv sync --extra dev
+    - uv run ruff check src/ tests/
+    - uv run ruff format --check src/ tests/
+  allow_failure: false
+
+test:import-smoke:
+  stage: test
+  script:
+    - uv sync
+    - uv run python -c "import calliope; print(f'calliope {calliope.__version__} import OK')"
+    - uv run python -c "import calliope.cards, calliope.pages, calliope.templates, calliope.assets, calliope.render, calliope.deploy; print('all subpackages import OK')"
+  needs: [lint:ruff]
+
+test:pytest:
+  stage: test
+  script:
+    - uv sync --extra dev
+    - uv run pytest -q
+  needs: [lint:ruff]
+  allow_failure: false
