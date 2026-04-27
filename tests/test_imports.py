@@ -14,7 +14,7 @@ from __future__ import annotations
 def test_top_level_package_imports():
     import calliope
 
-    assert calliope.__version__ == "0.0.2"
+    assert calliope.__version__ == "0.0.3"
 
 
 def test_subpackages_import():

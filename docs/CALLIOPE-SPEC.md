@@ -219,12 +219,147 @@ class RenderResult:
     render_time_ms: float
 ```
 
-## 9. Stage map
+## 9. Cards
+
+`calliope.cards` ships substrate primitives for per-row card renderers.
+The cleanroom card sources are domain-coupled to DBPR / Florida / RiskyEats
+taxonomies; calliope retains only the substrate abstractions and pushes
+domain literals into adapters.
+
+### 9.1 CardRenderer Protocol
+
+```python
+@runtime_checkable
+class CardRenderer(Protocol):
+    @property
+    def metadata(self) -> TemplateMetadata: ...
+    def render(
+        self,
+        row: Mapping[str, Any],
+        context: Mapping[str, Any] | None = None,
+    ) -> str: ...
+```
+
+Per-row semantics: `render()` is called once per data row with that
+row's mapping. Site-level aggregates and navigation belong in
+`calliope.pages`, not here. The Protocol is `runtime_checkable` so
+adapters can pick a renderer by structural match without subclassing.
+
+### 9.2 CardTemplate ABC + JinjaCardTemplate
+
+`CardTemplate` mirrors `PageTemplate` (metadata + render + the same
+helpers `expected_blocks` and `required_fields`) but with per-row
+semantics. `JinjaCardTemplate` is the concrete Jinja2-aware base;
+subclasses set `jinja_template_name` and override `bind_context()` to
+shape the per-row mapping before rendering.
+
+### 9.3 Taxonomy
+
+```python
+@dataclass(frozen=True)
+class TaxonomyEntry:
+    label: str
+    css_class: str = ""
+    color: str | None = None
+
+@dataclass(frozen=True)
+class Taxonomy:
+    name: str
+    entries: Mapping[str, TaxonomyEntry]
+    fallback: TaxonomyEntry
+```
+
+Subsumes the cleanroom pattern of repeated per-domain dicts
+(`LICENSE_TYPE_MAP`, `INSPECTION_TYPE_MAP`, `DISPOSITION_MAP`,
+`ENTITY_TYPE_MAP`). Adapters supply concrete entries; calliope ships
+zero domain-specific taxonomy data. Defensive-copy semantics match
+`TemplateMetadata`: entries are stored in a `MappingProxyType`, the
+class is explicitly unhashable. Keys are string-only; non-`str` keys are
+rejected at construction, and lookup does not coerce key types.
+
+### 9.4 Pill
+
+```python
+@dataclass(frozen=True)
+class Pill:
+    label: str
+    css_class: str = ""
+    color: str | None = None
+    title: str | None = None
+```
+
+`render_pill(pill)` and `render_pills(pills)` produce the inline-badge
+HTML that adapters compose into card bodies. `Pill.from_taxonomy()`
+adapts a `TaxonomyEntry` into a `Pill` for the common
+"taxonomy-lookup → render" path. Labels are HTML-escaped via
+`templates.safe_value`.
+
+### 9.5 Heatbar
+
+```python
+@dataclass(frozen=True)
+class HeatbarSegment:
+    weight: float
+    css_class: str = ""
+    color: str | None = None
+    title: str | None = None
+```
+
+`render_heatbar(segments, fill_pct=…)` renders a colored bar that fills
+`fill_pct` percent of its container width. Segments split that filled
+width proportionally by `weight`. `fill_pct` is clamped to `[0, 100]`;
+zero-weight and non-finite-weight segments are skipped. Score
+*calculation* lives in adapters; calliope only renders.
+
+### 9.6 Tier classification
+
+```python
+@dataclass(frozen=True)
+class Tier:
+    name: str
+    label: str
+    min_score: float = 0.0
+    emoji: str | None = None
+    css_class: str = ""
+    color: str | None = None
+
+@dataclass(frozen=True)
+class TierTable:
+    name: str
+    tiers: tuple[Tier, ...]    # sorted ascending by min_score
+    def classify(self, score: float) -> Tier: ...
+```
+
+`TierTable.classify(score)` returns the tier with the highest
+`min_score` not exceeding `score`, or the lowest tier if `score` is
+below every threshold. Duplicate `min_score` thresholds are rejected at
+construction with `ValueError`. `make_tier_table(name, iterable)`
+accepts any iterable of tiers and sorts/freezes them.
+
+### 9.7 Formatters
+
+`format_iso_date(value)` and `slugify(text)` are pure utilities. They
+are domain-agnostic; adapter-specific date-shape parsers (e.g. Sunbiz
+`MMDDYYYY`) and adapter-specific business-age calculations stay in the
+adapter, not in calliope. `slugify(text, separator=..., max_length=...)`
+trims leading and trailing runs of the chosen separator, returns `""`
+for `max_length=0`, and rejects negative `max_length` with
+`ValueError`. When `max_length` truncation lands inside a separator run,
+the trailing non-alphanumeric characters are stripped so the output
+ends in an alphanumeric. This preserves `slugify(slugify(x)) ==
+slugify(x)` for any separator made entirely of non-alphanumeric
+characters (the supported and recommended case). Separators that
+contain alphanumeric characters are not idempotent because alphanumerics
+inside a separator survive the next pass through the slug logic;
+callers should use only non-alphanumeric separators (`-`, `_`, `--`,
+etc.).
+
+## 10. Stage map
 
 | Stage | Subpackage | Lift sources |
 |---|---|---|
-| 1 *(this stage)* | `templates` | spec; `aedifex_template.py` (sanitized helpers); production marker fixtures from `L1_metagenerator.py` |
-| 2 | `cards` | `card_components.py` family (5 variants) |
+| 1 | `templates` | spec; `aedifex_template.py` (sanitized helpers); production marker fixtures from `L1_metagenerator.py` |
+| 2 *(this stage)* | `cards` | substrate primitives designed from spec; `card_components.py` family is reference material, not lift source — concrete domain card renderers stay in adapters |
 | 3 | `pages` | `L1_landing_generator.py`, `L1_metagenerator.py`, `L1_narrative.py` |
 | 4 | `render` (per-dimension) | 13× `L1_*_generator.py` |
 | 5 | `render` (drivers) | `L1_render_parallel.py`, `L1_render_static_pro.py` |
@@ -233,7 +368,7 @@ class RenderResult:
 
 See `docs/LIFT_PATTERN.md` for the per-file lift methodology.
 
-## 10. Versioning
+## 11. Versioning
 
 - **Major:** structural change to marker grammar, `TemplateMetadata` shape, or
   subpackage boundaries.
