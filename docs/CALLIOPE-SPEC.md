@@ -1,6 +1,6 @@
 # Calliope Specification
 
-**Status:** v0.1 — Phase 7 Stage 1 (templates foundation)
+**Status:** v0.1 — Phase 7 Stage 3 (pages)
 **Reference:** AEDIFEX/ASSG (2025-12-09) — used as a guide, not adopted wholesale.
 
 ---
@@ -354,13 +354,146 @@ inside a separator survive the next pass through the slug logic;
 callers should use only non-alphanumeric separators (`-`, `_`, `--`,
 etc.).
 
-## 10. Stage map
+## 10. Pages
+
+`calliope.pages` ships substrate-shaped page-composition primitives.
+Like cards, the cleanroom page generators are heavily DBPR / Florida
+domain-coupled, so calliope re-designs the substrate-shaped abstractions
+and pushes domain-specific page logic into adapters.
+
+### 10.1 Pagination
+
+```python
+@dataclass(frozen=True)
+class Pagination:
+    page_number: int       # 1-based
+    total_pages: int
+    items_per_page: int
+    total_items: int
+
+@dataclass(frozen=True)
+class PaginationPage:
+    pagination: Pagination
+    items: tuple[T, ...]
+
+def paginate(items: Sequence[T], items_per_page: int) -> Iterator[PaginationPage]: ...
+```
+
+`paginate()` is a streaming iterator: render drivers can iterate
+without materializing the full site at once. It always emits at least
+one page (an empty index page is still a valid page). `Pagination`
+exposes `is_first` / `is_last` / `has_previous` / `has_next` /
+`previous_page` / `next_page` for nav-link templates. Construction is
+strict: `total_pages` must equal
+`max(1, ceil(total_items / items_per_page))`.
+
+### 10.2 Hero
+
+```python
+@dataclass(frozen=True)
+class Hero:
+    title: str
+    subtitle: str = ""
+    background_image: str | None = None
+    background_gradient: str | None = None
+    cta_label: str | None = None
+    cta_href: str | None = None
+    cta_class: str = "hero-cta"
+```
+
+`render_hero(hero)` emits a `<section class="hero">…</section>`
+wrapped in calliope marker comments (`<!-- BLOCK:hero -->` /
+`<!-- /BLOCK:hero -->`) so pages that include a hero can validate the
+section as a discrete block. Title / subtitle / CTA label are
+HTML-escaped via `templates.safe_value`; `cta_href`, `cta_class`, and
+the `container_class` render argument are emitted as escaped attribute
+text. The CTA renders only when both label and href are set. `Hero`
+accepts at most one of `background_image`, `background_gradient`.
+Class-list fields accept only ASCII letters, digits, `_`, `-`, and
+single spaces between tokens, and reject HTML entity references
+matching `&[#a-zA-Z0-9]+;?` at construction. `background_image`
+rejects `"`, `'`, `\n`, `\r`, and HTML entity references matching
+`&[#a-zA-Z0-9]+;?`; `background_gradient` rejects those characters plus
+`;` and the same entity references before render-time so inline CSS
+cannot break out of its attribute or append a second declaration after
+HTML decoding.
+
+### 10.3 Scoreboard
+
+```python
+@dataclass(frozen=True)
+class ScoreboardRow:
+    label: str
+    count: int = 0
+    href: str | None = None
+    color: str | None = None
+    css_class: str = ""
+
+@dataclass(frozen=True)
+class Scoreboard:
+    title: str
+    rows: tuple[ScoreboardRow, ...]
+    total_label: str = "TOTAL"
+    show_total: bool = True
+    container_class: str = "scoreboard"
+    @property
+    def total(self) -> int: ...
+```
+
+`render_scoreboard(scoreboard)` emits a `<section class="scoreboard">…
+</section>` block. Rows with `href` set render as `<a>`; rows without
+render as `<div>`. `count` is required `>= 0`. `make_scoreboard(title,
+iterable)` is a convenience constructor that accepts any iterable.
+`href`, `css_class`, and `container_class` are emitted as escaped
+attribute text. Class-list fields accept only ASCII letters, digits,
+`_`, `-`, and single spaces between tokens, and reject HTML entity
+references matching `&[#a-zA-Z0-9]+;?` at construction. `color`
+rejects `"`, `'`, `\n`, `\r`, `;`, and HTML entity references matching
+`&[#a-zA-Z0-9]+;?` before render-time so inline CSS cannot append
+attacker-controlled declarations after HTML decoding.
+
+### 10.4 Narrative
+
+```python
+@runtime_checkable
+class NarrativeRenderer(Protocol):
+    def render(self, signals: Mapping[str, Any]) -> str: ...
+
+class TemplateNarrativeRenderer:
+    def __init__(self, environment: Environment, template_name: str): ...
+```
+
+The Protocol decouples narrative composition from any specific backend.
+`TemplateNarrativeRenderer` ships as the default Jinja2-backed
+implementation; AI-driven renderers belong in adapters (calliope ships
+no AI client). Rendered output is whitespace-stripped at the boundary.
+
+### 10.5 Canonical block-name tuples
+
+The following tuples are recommended `TemplateMetadata.blocks` values
+for common page archetypes. Adapters can define their own; the
+canonical tuples make cross-adapter pages consistent for downstream
+tooling:
+
+| Tuple | Sequence |
+|---|---|
+| `INDEX_PAGE_BLOCKS` | head, header, nav, hero, scoreboard, content, footer |
+| `LIST_PAGE_BLOCKS` | head, header, nav, filters, list, pagination, footer |
+| `DIMENSION_PAGE_BLOCKS` | head, header, nav, how-to-use, stats, signup, news, content, legal, footer |
+| `DETAIL_PAGE_BLOCKS` | head, header, nav, summary, details, related, footer |
+
+`DIMENSION_PAGE_BLOCKS` matches the production sequence at
+`L1_metagenerator.py:1331-1369` verbatim; calliope keeps that tuple
+stable so pages lifted with this sequence validate without custom
+metadata.
+
+## 11. Stage map
 
 | Stage | Subpackage | Lift sources |
 |---|---|---|
 | 1 | `templates` | spec; `aedifex_template.py` (sanitized helpers); production marker fixtures from `L1_metagenerator.py` |
-| 2 *(this stage)* | `cards` | substrate primitives designed from spec; `card_components.py` family is reference material, not lift source — concrete domain card renderers stay in adapters |
-| 3 | `pages` | `L1_landing_generator.py`, `L1_metagenerator.py`, `L1_narrative.py` |
+| 2 | `cards` | substrate primitives designed from spec; `card_components.py` family is reference material, not lift source |
+| 3 *(this stage)* | `pages` | substrate primitives (pagination, hero, scoreboard, narrative); `L1_landing_generator.py` / `L1_metagenerator.py` / `L1_narrative.py` are reference material — concrete domain page generators stay in adapters |
 | 4 | `render` (per-dimension) | 13× `L1_*_generator.py` |
 | 5 | `render` (drivers) | `L1_render_parallel.py`, `L1_render_static_pro.py` |
 | 6 | `deploy` | `deploy_tiiny.py` |
@@ -368,7 +501,7 @@ etc.).
 
 See `docs/LIFT_PATTERN.md` for the per-file lift methodology.
 
-## 11. Versioning
+## 12. Versioning
 
 - **Major:** structural change to marker grammar, `TemplateMetadata` shape, or
   subpackage boundaries.
@@ -379,7 +512,42 @@ See `docs/LIFT_PATTERN.md` for the per-file lift methodology.
 Calliope follows PEP 440. The first stable tag is `v0.1.0`, gated on at least
 one working primitive in each of cards, pages, render, deploy.
 
-## 11. What calliope is not
+## 13. Security posture
+
+Calliope is a rendering substrate, not an XSS prevention layer. Its
+guarantees about caller-supplied input are scoped:
+
+| Surface | Calliope's behavior | Adapter's responsibility |
+|---|---|---|
+| Text content (page body, card body, scoreboard labels, hero title/subtitle/CTA label, narrative output) | HTML-escaped via `templates.safe_value` (escapes `<`, `>`, `&`, `"`, `'`). | Pass plain text; calliope handles escaping. |
+| `Hero` style-bound fields (`background_image`, `background_gradient`, `cta_class`) | Validated at construction: rejects raw or HTML-entity-encoded `"`, `'`, `\n`, `\r`, `;` (declaration values only). Validators decode via Python's HTML5 entity table (`html.unescape()`), so legacy named entities like `&quot` without `;` are caught. | Sanitize URLs and CSS values from untrusted sources before construction. |
+| `Scoreboard.container_class`, `ScoreboardRow.color`, `ScoreboardRow.css_class` | Same construction-time validation as Hero's class/style fields. | Same — sanitize untrusted values. |
+| Href fields (`Hero.cta_href`, `ScoreboardRow.href`) | HTML-escaped at render time via `safe_value` (renders inside `href="..."`). **Not** validated at construction; calliope is not a URL validator. | Sanitize URL inputs (scheme, encoding) at the adapter layer. |
+| Other attribute sinks (`Pill.css_class`, `Pill.color`, `HeatbarSegment.css_class`/`color`, `templates.shell.html_head` `stylesheets`/`scripts`, `templates.shell.navigation` href values) | **No construction-time validation.** Values are interpolated into HTML/CSS attributes verbatim. | **Sanitize before passing to calliope.** Adapters that render attacker-controlled data through these surfaces must escape and validate at the adapter layer. |
+
+The validators in `calliope.pages._validation` are **defense-in-depth**,
+not a complete sanitization layer. Building a complete sanitization
+layer for HTML/CSS attribute contexts is a substantial security
+project (the WHATWG HTML5 parser has many decoding edge cases) that
+belongs in a dedicated library, not the rendering substrate. Adapters
+that handle untrusted input should run their own sanitization (e.g.
+[bleach](https://bleach.readthedocs.io/), [nh3](https://nh3.readthedocs.io/),
+or a domain-specific allow-list) before passing values to calliope.
+
+The validator's `html.unescape()` pass is **single-pass**, which
+matches browser behavior: HTML attribute values are decoded once.
+Inputs like `&amp;quot;` decode to the literal string `&quot;` and are
+emitted as-is — the browser does not recursively decode, so this is
+not a bypass.
+
+Calliope's validators on Hero/Scoreboard exist because those
+dataclasses encapsulate domain-meaningful semantics (a hero
+*background image* is conceptually a URL; a CSS *gradient* is a
+declaration value); rejecting obviously-broken inputs at construction
+catches typos and trivial misuse without claiming to be a complete
+escape barrier.
+
+## 14. What calliope is not
 
 - A general-purpose template engine. Use Jinja2 directly for that.
 - A site framework. Calliope renders pages; site structure is the adapter's
@@ -387,3 +555,5 @@ one working primitive in each of cards, pages, render, deploy.
 - A CMS. Calliope is a deterministic build pipeline, not an authoring tool.
 - A complete reimplementation of AEDIFEX/ASSG. Calliope adopts the marker
   contract and validation idea; it does not adopt the reference implementation.
+- An XSS sanitizer or HTML attribute escape layer. See §13 for the
+  security boundary.

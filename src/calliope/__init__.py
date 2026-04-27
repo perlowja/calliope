@@ -76,4 +76,4 @@ v0.0.1rc1 is the bootstrap tag (PEP 440 form); first real release
 have one working primitive.
 """
 
-__version__ = "0.0.3"
+__version__ = "0.0.4"
