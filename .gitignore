@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Test caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build
+build/
+dist/
+
+# Pipeline runtime outputs
+data/
+logs/
+*.log
+
+# Exception: tutorial-fixture data lives in the repo so examples can
+# run offline. Negative pattern un-ignores the directory and its
+# contents — must come AFTER the `data/` rule above.
+!tests/fixtures/data/
+!tests/fixtures/data/**
+
+# OS
+.DS_Store
+._*
+
+# Editor
+.vscode/
+.idea/
+
+# Secrets — defensive
+.env
+.env.local
+*credentials*.json
+*.pem
+*.p12
+*.pfx
